@@ -19,7 +19,7 @@ func New(r *redis.Client, setKeyName, listKeyName string) *Manager {
 }
 
 func (m *Manager) Add(item string) error {
-	script := `if redis.call('SADD', KEYS[1], KEYS[3]) == 1 then redis.call('RPUSH', KEYS[2], KEYS[3]) end`
+	script := `if redis.call('SADD', KEYS[1], KEYS[3]) == 1 then redis.call('RPUSH', KEYS[2], KEYS[3]) end return 0`
 	return m.redisClient.Eval(script, []string{m.setKeyName, m.listKeyName, item}).Err()
 }
 
