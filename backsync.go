@@ -18,18 +18,23 @@ type Manager struct {
 	//storing the items under backsync to mainDb, the values is the start syncTime
 	inuseTimeHashName string
 
-	//if the backsync time over the timeLimit, then the item will be pickup by another worker
+	//for a item returned by Top(), it will be "invisible" to other backSync Worker for <timeLimit> second
+	//if there is no deletion of the item within <timeLimit> seconds,  the item will be pickup by another worker
 	timeLimit time.Duration
+
+	//In Top(), only the item with > <minIdleTime> minIdleTime, can be picked up as candidate
+	minIdleTime time.Duration
 }
 
-func New(r *redis.Client, itemSetName, updateTimeHashName, inuseTimeHashName string, timeLimit time.Duration) *Manager {
+func New(r *redis.Client, itemSetName, updateTimeHashName, inuseTimeHashName string, timeLimit, minIdleTime time.Duration) *Manager {
 	return &Manager{
 		redisClient:        r,
 		itemSetName:        itemSetName,
 		updateTimeHashName: updateTimeHashName,
 		inuseTimeHashName:  inuseTimeHashName,
 
-		timeLimit: timeLimit,
+		timeLimit:   timeLimit,
+		minIdleTime: minIdleTime,
 	}
 }
 
@@ -63,10 +68,13 @@ func toInt64(val interface{}) int64 {
 }
 
 /*
-	to probe for 2*n candidate, and return the atmost least-update n items
+	to probe for 8*n candidate, and return the atmost least-update n items
+	thus, the Top will return least updated 12.5% records, it is quite good approx
+
+	if minIdleSec > 0, then the library will only return record with idle time > minIdleSec
 */
 func (m *Manager) Top(n int) (items []string, err error) {
-	candidateNames, err0 := m.redisClient.SRandMemberN(m.itemSetName, int64(n*2)).Result()
+	candidateNames, err0 := m.redisClient.SRandMemberN(m.itemSetName, int64(n*8)).Result()
 	if err0 != nil {
 		return nil, err0
 	}
@@ -89,6 +97,8 @@ func (m *Manager) Top(n int) (items []string, err error) {
 	//sort the candidates, and remove the inuse candidates
 	candidates := []Candidate{}
 	limitTs := time.Now().Add(-1 * m.timeLimit).Unix()
+	limitIdleTs := time.Now().Add(-1 * m.minIdleTime).Unix()
+
 	for i, _ := range candidateNames {
 		if inuseTs := toInt64(inUseTimes[i]); inuseTs == 0 || inuseTs < limitTs {
 			//only include the item not pickup already by some backsync worker
@@ -96,7 +106,9 @@ func (m *Manager) Top(n int) (items []string, err error) {
 				name: candidateNames[i],
 				ts:   toInt64(updateTimes[i]),
 			}
-			candidates = append(candidates, candidate)
+			if candidate.ts < limitIdleTs {
+				candidates = append(candidates, candidate)
+			}
 		}
 	}
 	sort.Sort(CandidateByScore(candidates))
